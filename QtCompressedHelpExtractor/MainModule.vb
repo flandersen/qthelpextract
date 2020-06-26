@@ -1,10 +1,16 @@
-﻿Imports System.IO
+﻿Imports System.Data.SQLite
+Imports System.IO
 Imports System.IO.Compression
+Imports System.Linq
 
 Module MainModule
+
     Private Const BUFFER_SIZE As Integer = 4095
+
+    Private _contentFilePath As String
     Private _inputFilePath As String
-    Private _targetFolder As String
+    Private _outputPath As String
+    Private _wkhtmltopdfPath As String
 
     Function Main() As Integer
 
@@ -16,7 +22,7 @@ Module MainModule
         End If
 
         _inputFilePath = Environment.GetCommandLineArgs(1)
-        _targetFolder = Environment.GetCommandLineArgs(2)
+        _outputPath = Environment.GetCommandLineArgs(2)
 
         If String.IsNullOrEmpty(_inputFilePath) OrElse Not File.Exists(_inputFilePath) Then
             Console.WriteLine("Error: SQLite file does not exist.")
@@ -26,7 +32,7 @@ Module MainModule
 
         Try
             ' Check if target path is valid.
-            With New DirectoryInfo(_targetFolder)
+            With New DirectoryInfo(_outputPath)
             End With
 
         Catch ex As Exception
@@ -37,7 +43,9 @@ Module MainModule
 
         Try
             Console.WriteLine("Starting extraction ...")
+            _contentFilePath = Path.Combine(_outputPath, "content.txt")
 
+            ExportFileOrder()
             ExtractFilesFromSqlite()
 
             Console.WriteLine("Finished.")
@@ -49,23 +57,113 @@ Module MainModule
         End Try
     End Function
 
-    Private Sub ExtractFilesFromSqlite()
+    Private Sub ExportFileOrder()
+        Dim data() As Byte
+        Dim filePaths As IDictionary(Of String, String)
+        Dim joinedPaths As String
+        Dim pathList As IList(Of String)
+
+        data = GetTableOfContentAsBlob()
+        filePaths = ExtractFilePathsFromTableOfContent(data)
+        pathList = filePaths.Keys.ToList()
+        pathList = RemoveAnchorLinks(pathList)
+        joinedPaths = String.Join(" ", pathList)
+
+        Using writer As New StreamWriter(_contentFilePath)
+            writer.WriteLine(joinedPaths)
+        End Using
+    End Sub
+
+    Private Function RemoveAnchorLinks(filePaths As IList(Of String)) As IList(Of String)
+        Dim withoutAnchor As String
+        Dim withoutAnchors As New List(Of String)
+        Dim regex As New Text.RegularExpressions.Regex("#{1}\w+")
+
+        For Each path As String In filePaths
+            withoutAnchor = regex.Replace(path, String.Empty)
+            withoutAnchors.Add(withoutAnchor)
+        Next
+
+        Return withoutAnchors
+    End Function
+
+    Private Function ExtractFilePathsFromTableOfContent(data() As Byte) As Dictionary(Of String, String)
+        Dim filePaths As New Dictionary(Of String, String)
+        Dim filePath As String
+        Dim filePathLength As Integer
+        Dim i As Integer
+        Dim lastIndex As Integer
+        Dim level As Integer
+        Dim title As String
+        Dim titleLength As Integer
+
+        lastIndex = data.Length - 1
+        i = 0
+        While i <= lastIndex
+            i += 2 ' skip null-byte
+            level = data(i + 1) + 256 * data(i) ' big endian
+            i += 2
+
+            If data(i) = &HFF AndAlso data(i + 1) = &HFF Then
+                ' chapter has no file...
+                filePath = String.Empty
+                i += 4 ' consume four bytes
+            Else
+                ' chapter has file...
+                i += 2 ' skip null-byte
+
+                filePathLength = data(i + 1) + 256 * data(i) ' big endian
+                i += 2
+
+                filePath = Text.Encoding.BigEndianUnicode.GetString(data, i, filePathLength)
+                i += filePathLength
+            End If
+
+            i += 2 ' skip null-byte
+
+            titleLength = data(i + 1) + 256 * data(i) ' big endian
+            i += 2
+
+            title = Text.Encoding.BigEndianUnicode.GetString(data, i, titleLength)
+            i += titleLength
+
+            filePaths(filePath) = title
+        End While
+
+        Return filePaths
+    End Function
+
+    Private Function GetTableOfContentAsBlob() As Byte()
+        Dim data As Byte() = Nothing
+
         Using dbConn As New SQLite.SQLiteConnection(String.Format("DataSource=""{0}""", _inputFilePath))
             dbConn.Open()
 
+            Dim filePaths As New Dictionary(Of String, String)
             Dim totalCount As Integer = 0
 
             Using command As IDbCommand = dbConn.CreateCommand()
                 command.CommandText =
-                    "SELECT COUNT(*) FROM FileNameTable " &
-                    "WHERE Name NOT NULL "
+                    "SELECT Data from ContentsTable " &
+                    "WHERE ID = 1"
 
                 Using reader As IDataReader = command.ExecuteReader
                     If reader.Read Then
-                        totalCount = reader.GetInt32(0)
+                        data = reader.GetValue(0)
                     End If
                 End Using
             End Using
+        End Using
+
+        Return data
+    End Function
+
+    Private Sub ExtractFilesFromSqlite()
+        Using dbConn As New SQLiteConnection(String.Format("DataSource=""{0}""", _inputFilePath))
+            dbConn.Open()
+
+            Dim fileCount As Integer
+            fileCount = GetFileCountFromSqlite(dbConn)
 
             Using command As IDbCommand = dbConn.CreateCommand()
                 command.CommandText =
@@ -78,45 +176,61 @@ Module MainModule
 
                 Using reader As IDataReader = command.ExecuteReader
                     While reader.Read
-
-                        Dim data() As Byte
+                        Dim compressedData() As Byte
+                        Dim data As Byte()
                         Dim name As String
-                        Dim uncompressedData As Byte()
-
-                        count += 1
 
                         name = reader.GetString(0)
-                        data = reader.GetValue(1)
-                        uncompressedData = DecompressData(data)
+                        compressedData = reader.GetValue(1)
+                        data = DecompressData(compressedData)
 
-                        WriteToFile(name, uncompressedData)
+                        WriteToFile(name, data)
 
-                        Console.WriteLine("{0} of {1} files done ({2}%).", count, totalCount, Math.Truncate(count * 100.0 / totalCount))
+                        count += 1
+                        Console.WriteLine("{0} of {1} files done ({2}%).", count, fileCount, Math.Truncate(count * 100.0 / fileCount))
                     End While
                 End Using
             End Using
         End Using
     End Sub
 
-    Private Sub WriteToFile(name As String, uncompressedData() As Byte)
+    Private Function GetFileCountFromSqlite(dbConn As SQLiteConnection) As Integer
+        Dim fileCount As Integer = 0
 
+        Using command As IDbCommand = dbConn.CreateCommand()
+            command.CommandText =
+                "SELECT COUNT(*) FROM FileNameTable " &
+                "WHERE Name NOT NULL "
+
+            Using reader As IDataReader = command.ExecuteReader
+                If reader.Read Then
+                    fileCount = reader.GetInt32(0)
+                End If
+            End Using
+        End Using
+
+        Return fileCount
+    End Function
+
+    Private Sub WriteToFile(name As String, data() As Byte)
+        Dim absolutePath As String
         Dim fileName As String = Path.GetFileName(name)
-        Dim folder As String = Path.GetDirectoryName(name)
+        Dim directory As String = Path.GetDirectoryName(name)
 
-        If Not String.IsNullOrEmpty(folder) Then
-            folder = Path.Combine(_targetFolder, folder)
+        If String.IsNullOrEmpty(directory) Then
+            directory = _outputPath
         Else
-            folder = _targetFolder
+            directory = Path.Combine(_outputPath, directory)
         End If
 
-        If Not Directory.Exists(folder) Then
-            Directory.CreateDirectory(folder)
+        If Not IO.Directory.Exists(directory) Then
+            IO.Directory.CreateDirectory(directory)
         End If
 
-        Dim absolutePath As String = Path.Combine(folder, fileName)
+        absolutePath = Path.Combine(directory, fileName)
 
         Using writer As New FileStream(absolutePath, FileMode.Create)
-            writer.Write(uncompressedData, 0, uncompressedData.Length)
+            writer.Write(data, 0, data.Length)
         End Using
     End Sub
 
@@ -133,15 +247,17 @@ Module MainModule
     End Function
 
     Private Function DecompressData(compressed() As Byte) As Byte()
-        Dim gzipData As Byte() = AddGzipHeader(compressed)
-        Dim decompressed() As Byte = DecompressGzip(gzipData)
+        Dim gzipData As Byte()
+        Dim decompressed() As Byte
+
+        gzipData = AddGzipHeader(compressed)
+        decompressed = DecompressGzip(gzipData)
 
         Return decompressed
     End Function
 
     Private Function DecompressGzip(input As Byte()) As Byte()
         Using source = New MemoryStream(input)
-
             Dim buffer(BUFFER_SIZE) As Byte
             Dim read As Integer
 
