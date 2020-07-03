@@ -106,7 +106,7 @@ namespace QtCompressedHelpExtractor
                 string filePath;
                 string title;
 
-                i += 2; // skip null-byte
+                i += 2; // skip null-bytes
                 level = data[i + 1] + 256 * data[i]; // big endian
                 i += 2;
 
@@ -119,14 +119,14 @@ namespace QtCompressedHelpExtractor
                 else
                 {
                     // chapter has file...
-                    i += 2; // skip null-byte
+                    i += 2; // skip null-bytes
                     filePathLength = data[i + 1] + 256 * data[i]; // big endian
                     i += 2;
                     filePath = Encoding.BigEndianUnicode.GetString(data, i, filePathLength);
                     i += filePathLength;
                 }
 
-                i += 2; // skip null-byte
+                i += 2; // skip null-bytes
                 titleLength = data[i + 1] + 256 * data[i]; // big endian
                 i += 2;
                 title = Encoding.BigEndianUnicode.GetString(data, i, titleLength);
