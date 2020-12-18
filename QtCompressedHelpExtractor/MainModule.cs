@@ -14,8 +14,10 @@ namespace QtCompressedHelpExtractor
     static class MainModule
     {
         private static string _contentFilePath;
+        private static string _coverFile;
         private static string _inputFilePath;
         private static string _outputPath;
+        private static string _wkhtmltopdf;
 
         public static int Main()
         {
@@ -62,6 +64,32 @@ namespace QtCompressedHelpExtractor
                 Console.WriteLine("Unknown error: {0}{1}{2}", ex.Message, Constants.vbCrLf, ex.StackTrace);
                 return 1;
             }
+        }
+
+        private static void CreatePdf()
+        {
+            var content = string.Empty;
+            var args = "--footer-center [page] /[topage] " +
+                "--enable-local-file-access " +
+                "--load-error-handling skip " +
+                "--read-args-from-stdin " +
+                "--image-dpi 300 " +
+                "--image-quality 80 " +
+                "cover {0}";
+
+            args = string.Format(args, _coverFile);
+
+            using (var reader = new StreamReader(_contentFilePath))
+            {
+                if (!reader.EndOfStream)
+                {
+                    content = reader.ReadLine();
+                }                
+            }
+
+            var process = new Process { StartInfo = { FileName = _wkhtmltopdf, Arguments = args } };
+            process.StandardInput.WriteLine(content);
+            process.Start();
         }
 
         private static void ExportFileOrder()
@@ -267,7 +295,7 @@ namespace QtCompressedHelpExtractor
         private static byte[] DecompressGzip(byte[] input)
         {
             using (var mem = new MemoryStream(input))
-            {         
+            {
                 using (var result = new MemoryStream())
                 {
                     var buffer = new byte[4096];
