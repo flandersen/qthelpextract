@@ -8,6 +8,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using Microsoft.VisualBasic;
+using Microsoft.Win32;
 
 namespace QtCompressedHelpExtractor
 {
@@ -17,6 +18,7 @@ namespace QtCompressedHelpExtractor
         private static string _coverFile;
         private static string _inputFilePath;
         private static string _outputPath;
+        private static string _outputPdfPath;
         private static string _wkhtmltopdf;
 
         public static int Main()
@@ -30,6 +32,10 @@ namespace QtCompressedHelpExtractor
 
             _inputFilePath = Environment.GetCommandLineArgs()[1];
             _outputPath = Environment.GetCommandLineArgs()[2];
+            _outputPdfPath = "output.pdf";
+            _coverFile = "wincc_oa.htm";
+
+            Directory.SetCurrentDirectory(_outputPath);
 
             if (string.IsNullOrEmpty(_inputFilePath) || !File.Exists(_inputFilePath))
             {
@@ -52,12 +58,21 @@ namespace QtCompressedHelpExtractor
 
             try
             {
+                Console.WriteLine("Looking for wkhtmltopdf.");
+                GetWkhtmltopdfPath();
+
                 Console.WriteLine("Starting extraction ...");
                 _contentFilePath = Path.Combine(_outputPath, "content.txt");
-                ExportFileOrder();
-                ExtractFilesFromSqlite();
+                //ExportFileOrder();
+                //ExtractFilesFromSqlite();
+                CreatePdf();
                 Console.WriteLine("Finished.");
                 return 0;
+            }
+            catch (WkhtmltopdfNotFoundException)
+            {
+                Console.WriteLine("Wkhtmltopdf not found. Please install it first.");
+                return 1;
             }
             catch (Exception ex)
             {
@@ -66,10 +81,22 @@ namespace QtCompressedHelpExtractor
             }
         }
 
+        private static void GetWkhtmltopdfPath()
+        {
+            string regPath = @"SOFTWARE\wkhtmltopdf";
+            using var regKey = Registry.LocalMachine.OpenSubKey(regPath);
+            _wkhtmltopdf = (string)regKey.GetValue("PdfPath");
+
+            if (string.IsNullOrEmpty(_wkhtmltopdf))
+            {
+                throw new WkhtmltopdfNotFoundException("wkhtmltopdf not found, abort.");
+            }
+        }
+
         private static void CreatePdf()
         {
             var content = string.Empty;
-            var args = "--footer-center [page] /[topage] " +
+            var args = "--footer-center \"[page]/[topage]\" " +
                 "--enable-local-file-access " +
                 "--load-error-handling skip " +
                 "--read-args-from-stdin " +
@@ -84,12 +111,22 @@ namespace QtCompressedHelpExtractor
                 if (!reader.EndOfStream)
                 {
                     content = reader.ReadLine();
-                }                
+                    content += string.Format(" {0}", _outputPdfPath);
+                }
             }
 
-            var process = new Process { StartInfo = { FileName = _wkhtmltopdf, Arguments = args } };
-            process.StandardInput.WriteLine(content);
+            Process process = new Process { 
+                StartInfo = { 
+                    FileName = _wkhtmltopdf, 
+                    Arguments = args, 
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    CreateNoWindow = true
+                } 
+            };
             process.Start();
+            process.StandardInput.WriteLine(content);
+            process.WaitForExit(); 
         }
 
         private static void ExportFileOrder()
@@ -99,10 +136,8 @@ namespace QtCompressedHelpExtractor
             var pathList = RemoveAnchorLinks(filePaths.Keys.ToList());
             var joinedPaths = string.Join(" ", pathList);
 
-            using (var writer = new StreamWriter(_contentFilePath))
-            {
-                writer.WriteLine(joinedPaths);
-            }
+            using var writer = new StreamWriter(_contentFilePath);
+            writer.WriteLine(joinedPaths);
         }
 
         private static IList<string> RemoveAnchorLinks(IList<string> filePaths)
@@ -135,7 +170,7 @@ namespace QtCompressedHelpExtractor
                 string title;
 
                 i += 2; // skip null-bytes
-                level = data[i + 1] + 256 * data[i]; // big endian
+                // level = data[i + 1] + 256 * data[i]; // big endian
                 i += 2;
 
                 if (data[i] == 0xFF && data[i + 1] == 0xFF)
@@ -174,19 +209,15 @@ namespace QtCompressedHelpExtractor
                 dbConn.Open();
                 var filePaths = new Dictionary<string, string>();
 
-                using (var cmd = dbConn.CreateCommand())
-                {
-                    cmd.CommandText =
-                        "SELECT Data from ContentsTable " +
-                        "WHERE ID = 1";
+                using var cmd = dbConn.CreateCommand();
+                cmd.CommandText =
+                    "SELECT Data from ContentsTable " +
+                    "WHERE ID = 1";
 
-                    using (var reader = cmd.ExecuteReader())
-                    {
-                        if (reader.Read())
-                        {
-                            data = (byte[])reader.GetValue(0);
-                        }
-                    }
+                using var reader = cmd.ExecuteReader();
+                if (reader.Read())
+                {
+                    data = (byte[])reader.GetValue(0);
                 }
             }
 
@@ -200,28 +231,24 @@ namespace QtCompressedHelpExtractor
                 dbConn.Open();
                 var fileCount = GetFileCountFromSqlite(dbConn);
 
-                using (IDbCommand cmd = dbConn.CreateCommand())
-                {
-                    cmd.CommandText =
-                        "SELECT Name, Data from FileDataTable " +
-                        "JOIN FileNameTable " +
-                          "ON FileDataTable.Id = FileNameTable.FileId " +
-                        "WHERE Data NOT NULL AND Name NOT NULL " +
-                        "ORDER BY FolderID, FileId";
+                using IDbCommand cmd = dbConn.CreateCommand();
+                cmd.CommandText =
+                    "SELECT Name, Data from FileDataTable " +
+                    "JOIN FileNameTable " +
+                      "ON FileDataTable.Id = FileNameTable.FileId " +
+                    "WHERE Data NOT NULL AND Name NOT NULL " +
+                    "ORDER BY FolderID, FileId";
 
-                    using (var reader = cmd.ExecuteReader())
-                    {
-                        var count = 0;
-                        while (reader.Read())
-                        {
-                            var name = reader.GetString(0);
-                            var compressedData = (byte[])reader.GetValue(1);
-                            var data = DecompressData(compressedData);
-                            WriteToFile(name, data);
-                            count += 1;
-                            Console.WriteLine("{0} of {1} files done ({2}%).", count, fileCount, Math.Truncate(count * 100.0 / fileCount));
-                        }
-                    }
+                using var reader = cmd.ExecuteReader();
+                var count = 0;
+                while (reader.Read())
+                {
+                    var name = reader.GetString(0);
+                    var compressedData = (byte[])reader.GetValue(1);
+                    var data = DecompressData(compressedData);
+                    WriteToFile(name, data);
+                    count += 1;
+                    Console.WriteLine("{0} of {1} files done ({2}%).", count, fileCount, Math.Truncate(count * 100.0 / fileCount));
                 }
             }
         }
@@ -235,12 +262,10 @@ namespace QtCompressedHelpExtractor
                     "SELECT COUNT(*) FROM FileNameTable " +
                     "WHERE Name NOT NULL ";
 
-                using (var reader = cmd.ExecuteReader())
+                using var reader = cmd.ExecuteReader();
+                if (reader.Read())
                 {
-                    if (reader.Read())
-                    {
-                        fileCount = reader.GetInt32(0);
-                    }
+                    fileCount = reader.GetInt32(0);
                 }
             }
 
@@ -275,14 +300,12 @@ namespace QtCompressedHelpExtractor
 
         private static byte[] AddGzipHeader(byte[] input)
         {
-            using (var mem = new MemoryStream())
-            {
-                mem.Write(new byte[] { 0x1F, 0x8B }, 0, 2);    // GZip Magic Number
-                mem.WriteByte(0x8);                          // Compression Mode: Deflate
-                mem.WriteByte(0x0);                          // Flags: FTEXT
-                mem.Write(input, 0, input.Length);           // add input
-                return mem.ToArray();
-            }
+            using var mem = new MemoryStream();
+            mem.Write(new byte[] { 0x1F, 0x8B }, 0, 2);  // GZip Magic Number
+            mem.WriteByte(0x8);                          // Compression Mode: Deflate
+            mem.WriteByte(0x0);                          // Flags: FTEXT
+            mem.Write(input, 0, input.Length);           // add input
+            return mem.ToArray();
         }
 
         private static byte[] DecompressData(byte[] compressed)
@@ -294,29 +317,44 @@ namespace QtCompressedHelpExtractor
 
         private static byte[] DecompressGzip(byte[] input)
         {
-            using (var mem = new MemoryStream(input))
+            using var mem = new MemoryStream(input);
+            using var result = new MemoryStream();
+            var buffer = new byte[4096];
+            int read;
+
+            using (var decompressStream = new GZipStream(mem, CompressionMode.Decompress))
             {
-                using (var result = new MemoryStream())
+                do
                 {
-                    var buffer = new byte[4096];
-                    int read;
-
-                    using (var decompressionStream = new GZipStream(mem, CompressionMode.Decompress))
+                    read = decompressStream.Read(buffer, 0, buffer.Length);
+                    if (read > 0)
                     {
-                        do
-                        {
-                            read = decompressionStream.Read(buffer, 0, buffer.Length);
-                            if (read > 0)
-                            {
-                                result.Write(buffer, 0, read);
-                            }
-                        }
-                        while (read > 0);
+                        result.Write(buffer, 0, read);
                     }
-
-                    return result.ToArray();
                 }
+                while (read > 0);
             }
+
+            return result.ToArray();
+        }
+    }
+
+    [Serializable]
+    class WkhtmltopdfNotFoundException : Exception
+    {
+        public WkhtmltopdfNotFoundException()
+        {
+
+        }
+
+        public WkhtmltopdfNotFoundException(string message)
+        : base(message)
+        {
+        }
+
+        public WkhtmltopdfNotFoundException(string message, Exception inner)
+            : base(message, inner)
+        {
         }
     }
 }
