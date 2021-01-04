@@ -17,6 +17,7 @@ Compile the C# project with [Visual Studio](https://visualstudio.microsoft.com/v
 For example if you want to export the html pages of the WinCC OA 3.14 manual:
 
 `[source-file]` = `"C:\Siemens\Automation\WinCC_OA\3.14\help\en_US.utf8\WinCC_OA.qch"`
+
 `[target-directory]` = `"C:\Temp\WinCC-OA-Manual-3.14\"`
 
 ## How does the Tool work
