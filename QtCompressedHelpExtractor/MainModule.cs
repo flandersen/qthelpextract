@@ -7,7 +7,6 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
-using Microsoft.VisualBasic;
 using Microsoft.Win32;
 
 namespace QtCompressedHelpExtractor
@@ -30,10 +29,11 @@ namespace QtCompressedHelpExtractor
                 return 1;
             }
 
+            _coverFile = "wincc_oa.htm";
             _inputFilePath = Environment.GetCommandLineArgs()[1];
             _outputPath = Environment.GetCommandLineArgs()[2];
             _outputPdfPath = "output.pdf";
-            _coverFile = "wincc_oa.htm";
+            _contentFilePath = Path.Combine(_outputPath, "content.txt");
 
             Directory.SetCurrentDirectory(_outputPath);
 
@@ -62,10 +62,12 @@ namespace QtCompressedHelpExtractor
                 GetWkhtmltopdfPath();
 
                 Console.WriteLine("Starting extraction ...");
-                _contentFilePath = Path.Combine(_outputPath, "content.txt");
-                //ExportFileOrder();
-                //ExtractFilesFromSqlite();
+                ExportFileOrder();
+                ExtractFilesFromSqlite();
+
+                Console.WriteLine("Creating the PDF: " + _outputPdfPath);
                 CreatePdf();
+
                 Console.WriteLine("Finished.");
                 return 0;
             }
@@ -76,7 +78,7 @@ namespace QtCompressedHelpExtractor
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Unknown error: {0}{1}{2}", ex.Message, Constants.vbCrLf, ex.StackTrace);
+                Console.WriteLine("Unknown error: {0}\n{1}", ex.Message, ex.StackTrace);
                 return 1;
             }
         }
@@ -85,17 +87,19 @@ namespace QtCompressedHelpExtractor
         {
             string regPath = @"SOFTWARE\wkhtmltopdf";
             using var regKey = Registry.LocalMachine.OpenSubKey(regPath);
-            _wkhtmltopdf = (string)regKey.GetValue("PdfPath");
 
-            if (string.IsNullOrEmpty(_wkhtmltopdf))
+            if (regKey is null)
             {
                 throw new WkhtmltopdfNotFoundException("wkhtmltopdf not found, abort.");
             }
+
+            _wkhtmltopdf = (string)regKey.GetValue("PdfPath");
         }
 
         private static void CreatePdf()
         {
             var content = string.Empty;
+            var output = string.Empty;
             var args = "--footer-center \"[page]/[topage]\" " +
                 "--enable-local-file-access " +
                 "--load-error-handling skip " +
@@ -121,12 +125,16 @@ namespace QtCompressedHelpExtractor
                     Arguments = args, 
                     UseShellExecute = false,
                     RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
                     CreateNoWindow = true
                 } 
             };
+            Console.WriteLine("Starting wkhtmltopdf, please wait...");
             process.Start();
             process.StandardInput.WriteLine(content);
-            process.WaitForExit(); 
+            output = process.StandardOutput.ReadToEnd();
+            Console.WriteLine(output);
+            process.WaitForExit();
         }
 
         private static void ExportFileOrder()
@@ -163,7 +171,6 @@ namespace QtCompressedHelpExtractor
             while (i <= lastIndex)
             {
                 int filePathLength;
-                int level;
                 int titleLength;
 
                 string filePath;
@@ -197,7 +204,6 @@ namespace QtCompressedHelpExtractor
 
                 filePaths[filePath] = title;
             }
-
             return filePaths;
         }
 

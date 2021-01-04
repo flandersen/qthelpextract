@@ -35,7 +35,6 @@ namespace QtCompressedHelpExtractor.My
 
 namespace QtCompressedHelpExtractor.My
 {
-    [HideModuleName()]
     [DebuggerNonUserCode()]
     [System.Runtime.CompilerServices.CompilerGenerated()]
     internal static class MySettingsProperty
