@@ -304,44 +304,21 @@ namespace QtCompressedHelpExtractor
             }
         }
 
-        private static byte[] AddGzipHeader(byte[] input)
+        private static byte[] DecompressData(byte[] input)
         {
-            using var mem = new MemoryStream();
-            mem.Write(new byte[] { 0x1F, 0x8B }, 0, 2);  // GZip Magic Number
-            mem.WriteByte(0x8);                          // Compression Mode: Deflate
-            mem.WriteByte(0x0);                          // Flags: FTEXT
-            mem.Write(input, 0, input.Length);           // add input
-            return mem.ToArray();
-        }
+            input = input.Skip(6).ToArray();
 
-        private static byte[] DecompressData(byte[] compressed)
-        {
-            var gzipData = AddGzipHeader(compressed);
-            var decompressed = DecompressGzip(gzipData);
-            return decompressed;
-        }
-
-        private static byte[] DecompressGzip(byte[] input)
-        {
-            using var mem = new MemoryStream(input);
-            using var result = new MemoryStream();
-            var buffer = new byte[4096];
-            int read;
-
-            using (var decompressStream = new GZipStream(mem, CompressionMode.Decompress))
+            using (var sOutput = new MemoryStream())
+            using (var sCompressed = new MemoryStream())
             {
-                do
+                sCompressed.Write(input, 0, input.Length);
+                sCompressed.Position = 0;
+                using (var decomp = new DeflateStream(sCompressed, CompressionMode.Decompress))
                 {
-                    read = decompressStream.Read(buffer, 0, buffer.Length);
-                    if (read > 0)
-                    {
-                        result.Write(buffer, 0, read);
-                    }
+                    decomp.CopyTo(sOutput);
                 }
-                while (read > 0);
+                return sOutput.ToArray();
             }
-
-            return result.ToArray();
         }
     }
 
